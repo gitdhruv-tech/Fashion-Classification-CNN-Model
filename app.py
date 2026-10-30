@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from PIL import Image
+from PIL import Image, ImageOps
 import matplotlib.pyplot as plt
 import matplotlib
 
@@ -75,6 +76,10 @@ min_margin = st.sidebar.slider(
     "Uncertainty margin threshold", 0.05, 0.50, 0.20, 0.05,
     help="Minimum difference between top and second class probability to consider prediction distinct.",
 )
+rejection_sensitivity = st.sidebar.slider(
+    "Non-clothing rejection sensitivity", 0.05, 0.50, 0.20, 0.05,
+    help="If non-clothing probability reaches this threshold, the image is rejected as non-clothing, even if a clothing category had a slight plurality.",
+)
 invert_choice = st.sidebar.selectbox(
     "Invert colours?", ["Auto", "Yes", "No"],
     help="The model expects a light item on a DARK background.",
@@ -87,15 +92,19 @@ st.sidebar.markdown("**Tip:** works best on a single item on a plain background.
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def _predict_single(model, img: Image.Image) -> tuple:
-    """Returns (probs, small) for one PIL image using the existing pipeline."""
+    """Returns (probs, small, border_std) for one PIL image using the existing pipeline."""
+    arr = np.asarray(ImageOps.grayscale(img.convert("RGB")), dtype=np.uint8)
+    border = np.concatenate([arr[0, :], arr[-1, :], arr[:, 0], arr[:, -1]])
+    border_std = float(border.std())
+
     small = preprocess(img, invert_choice.lower(), crop)          # (28, 28) uint8
     x = (small.astype("float32") / 255.0)[None, ..., None]        # (1, 28, 28, 1)
     probs = model.predict(x, verbose=0)[0]
-    return probs, small
+    return probs, small, border_std
 
 
-def _render_prediction_col(col, probs: np.ndarray, model_display_name: str, class_names: list = None):
-    """Renders prediction result inside a Streamlit column with non-clothing rejection support."""
+def _render_prediction_col(col, probs: np.ndarray, model_display_name: str, class_names: list = None, border_std: float = 0.0):
+    """Renders prediction result inside a Streamlit column with non-clothing rejection and domain gating."""
     if class_names is None:
         class_names = CLOTHING_CLASSES
 
@@ -105,15 +114,45 @@ def _render_prediction_col(col, probs: np.ndarray, model_display_name: str, clas
     margin = float(probs[top] - probs[second])
     top_name = class_names[top]
 
-    # ── Non-clothing rejection check ─────────────────────────────────────────
-    if top_name == OTHER_CLASS:
+    other_idx = class_names.index(OTHER_CLASS) if OTHER_CLASS in class_names else -1
+    other_prob = float(probs[other_idx]) if other_idx >= 0 else 0.0
+
+    # ── Non-clothing rejection check (Direct or Gate-Triggered) ───────────────
+    is_direct_rejection = (top_name == OTHER_CLASS)
+    is_sensitivity_rejection = (other_idx >= 0 and other_prob >= rejection_sensitivity and top_name != OTHER_CLASS)
+    is_domain_scene_rejection = (other_idx >= 0 and border_std > 20.0 and other_prob >= 0.10 and conf < 0.85)
+    is_ambiguity_rejection = (other_idx >= 0 and top_name != OTHER_CLASS and conf < 0.70 and (conf - other_prob) < 0.25 and other_prob >= 0.08)
+
+    if is_direct_rejection or is_sensitivity_rejection or is_domain_scene_rejection or is_ambiguity_rejection:
         col.error("🚫 **Non-Clothing Image Detected & Rejected**")
-        col.markdown(
-            f"The image was classified as **{OTHER_CLASS}** with **{conf:.1%}** confidence "
-            f"(margin: {margin:.1%}).\n\n"
-            "This image does not belong to any of the 10 supported clothing categories and has been excluded."
-        )
-        col.metric("Rejection Confidence", f"{conf:.1%}", help=f"Model: {model_display_name}")
+        if is_direct_rejection:
+            col.markdown(
+                f"The image was classified as **{OTHER_CLASS}** with **{conf:.1%}** confidence "
+                f"(margin: {margin:.1%}).\n\n"
+                "This image does not belong to any of the 10 supported clothing categories and has been excluded."
+            )
+            col.metric("Rejection Confidence", f"{conf:.1%}", help=f"Model: {model_display_name}")
+        elif is_sensitivity_rejection:
+            col.markdown(
+                f"**Domain Gating Rejection:** Although closest clothing silhouette was **{top_name}** ({conf:.1%}), "
+                f"the non-clothing probability reached **{other_prob:.1%}** (exceeding your {rejection_sensitivity:.0%} sensitivity threshold).\n\n"
+                "Because clothing confidence was not decisive, the system rejected this as an unrelated scene / non-clothing image."
+            )
+            col.metric("Non-Clothing Probability", f"{other_prob:.1%}", delta=f"Threshold: {rejection_sensitivity:.0%}")
+        elif is_domain_scene_rejection:
+            col.markdown(
+                f"**Scene Background Rejection:** Continuous scene background detected (border variance: {border_std:.1f}) "
+                f"with non-clothing probability **{other_prob:.1%}** and clothing confidence {conf:.1%}.\n\n"
+                "Natural landscapes, wallpapers, or unisolated room photos are rejected to avoid false clothing tags."
+            )
+            col.metric("Scene Border Variance", f"{border_std:.1f}", delta=f"Non-Clothing: {other_prob:.1%}")
+        else:
+            col.markdown(
+                f"**Ambiguous Prediction Rejection:** The model had low confidence ({conf:.1%} for {top_name}) "
+                f"and could not decisively distinguish this image from non-clothing ({other_prob:.1%} Other, gap: {conf - other_prob:.1%}).\n\n"
+                "Rather than hazarding a false clothing prediction, the image is conservatively rejected as non-clothing."
+            )
+            col.metric("Uncertainty Gap", f"{conf - other_prob:.1%}", delta=f"Top Clothing: {conf:.1%}")
 
         col.markdown("**Top 3 predictions**")
         for i in order[:3]:
@@ -121,11 +160,14 @@ def _render_prediction_col(col, probs: np.ndarray, model_display_name: str, clas
 
         col.markdown("**All class probabilities**")
         col.bar_chart(pd.DataFrame({"probability": probs}, index=class_names))
-        return top_name
+        return OTHER_CLASS
 
     # ── Clothing prediction ──────────────────────────────────────────────────
     col.subheader(f"Prediction: {top_name}")
     col.metric("Confidence", f"{conf:.1%}", delta=f"Margin: {margin:.1%}", help=f"Model: {model_display_name}")
+
+    if border_std > 25.0:
+        col.info(f"ℹ️ Background variance is elevated ({border_std:.1f}). Fashion CNNs perform best on plain/isolated backgrounds.")
 
     if conf >= threshold and margin >= min_margin:
         col.success(f"Auto-tagged as **{top_name}** (confidence ≥ {threshold:.0%}, margin ≥ {min_margin:.0%}).")
@@ -224,7 +266,7 @@ if page == "📷 Image Prediction":
         img = _image_source_widget("singleA_")
 
         if img is not None:
-            probs, small = _predict_single(model, img)
+            probs, small, border_std = _predict_single(model, img)
 
             c1, c2 = st.columns(2)
             c1.image(img.convert("RGB"), caption="Your image", use_container_width=True)
@@ -234,7 +276,7 @@ if page == "📷 Image Prediction":
                 use_container_width=True,
             )
 
-            _render_prediction_col(st, probs, display_name, class_names)
+            _render_prediction_col(st, probs, display_name, class_names, border_std=border_std)
 
     # ── Side-by-Side Comparison Mode ──────────────────────────────────────────
     else:
@@ -266,29 +308,50 @@ if page == "📷 Image Prediction":
 
         if img is not None:
             # Preprocess ONCE — same tensor for both
-            probs_a, small = _predict_single(model_a, img)
+            probs_a, small, border_std = _predict_single(model_a, img)
             # Reuse the same preprocessed tensor for model B (re-predict from same small)
             x = (small.astype("float32") / 255.0)[None, ..., None]
             probs_b = model_b.predict(x, verbose=0)[0]
 
-            top_a = class_names_a[int(np.argmax(probs_a))]
-            top_b = class_names_b[int(np.argmax(probs_b))]
+            def _is_effective_rejection(p, cnames):
+                if OTHER_CLASS not in cnames:
+                    return False, cnames[int(np.argmax(p))]
+                oidx = cnames.index(OTHER_CLASS)
+                tidx = int(np.argmax(p))
+                tname = cnames[tidx]
+                oprob = float(p[oidx])
+                cconf = float(p[tidx])
+                if tname == OTHER_CLASS:
+                    return True, OTHER_CLASS
+                if oprob >= rejection_sensitivity:
+                    return True, OTHER_CLASS
+                if border_std > 20.0 and oprob >= 0.10 and cconf < 0.85:
+                    return True, OTHER_CLASS
+                if cconf < 0.70 and (cconf - oprob) < 0.25 and oprob >= 0.08:
+                    return True, OTHER_CLASS
+                return False, tname
+
+            rej_a, eff_a = _is_effective_rejection(probs_a, class_names_a)
+            rej_b, eff_b = _is_effective_rejection(probs_b, class_names_b)
 
             # Agreement & rejection contrast banner
-            if top_a == top_b:
-                st.success(f"✅ Both models agree: **{top_a}**")
-            elif top_a == OTHER_CLASS and top_b != OTHER_CLASS:
+            if eff_a == eff_b:
+                if rej_a:
+                    st.error(f"🛡️ Both models agree: Non-clothing image rejected (**{OTHER_CLASS}**)")
+                else:
+                    st.success(f"✅ Both models agree: **{eff_a}**")
+            elif rej_a and not rej_b:
                 st.warning(
-                    f"🛡️ **Non-Clothing Rejection in Action:** Model A ({name_a}) recognized and rejected this image as **{OTHER_CLASS}** ({probs_a.max():.1%}), "
-                    f"whereas Model B ({name_b}) falsely forced it into clothing category **{top_b}** ({probs_b.max():.1%})."
+                    f"🛡️ **Non-Clothing Rejection in Action:** Model A ({name_a}) recognized and rejected this image as **{OTHER_CLASS}** (non-clothing signal: {probs_a[class_names_a.index(OTHER_CLASS)]:.1%}), "
+                    f"whereas Model B ({name_b}) falsely forced it into clothing category **{eff_b}** ({probs_b.max():.1%})."
                 )
-            elif top_b == OTHER_CLASS and top_a != OTHER_CLASS:
+            elif rej_b and not rej_a:
                 st.warning(
-                    f"🛡️ **Non-Clothing Rejection in Action:** Model B ({name_b}) recognized and rejected this image as **{OTHER_CLASS}** ({probs_b.max():.1%}), "
-                    f"whereas Model A ({name_a}) falsely forced it into clothing category **{top_a}** ({probs_a.max():.1%})."
+                    f"🛡️ **Non-Clothing Rejection in Action:** Model B ({name_b}) recognized and rejected this image as **{OTHER_CLASS}** (non-clothing signal: {probs_b[class_names_b.index(OTHER_CLASS)]:.1%}), "
+                    f"whereas Model A ({name_a}) falsely forced it into clothing category **{eff_a}** ({probs_a.max():.1%})."
                 )
             else:
-                st.warning(f"⚠️ Models disagree — Model A says **{top_a}**, Model B says **{top_b}**")
+                st.warning(f"⚠️ Models disagree — Model A says **{eff_a}**, Model B says **{eff_b}**")
 
             img_col, _ = st.columns([1, 3])
             img_col.image(img.convert("RGB"), caption="Input image", use_container_width=True)
@@ -296,8 +359,8 @@ if page == "📷 Image Prediction":
             col_a, col_b = st.columns(2)
             col_a.markdown(f"### {name_a}")
             col_b.markdown(f"### {name_b}")
-            _render_prediction_col(col_a, probs_a, name_a, class_names_a)
-            _render_prediction_col(col_b, probs_b, name_b, class_names_b)
+            _render_prediction_col(col_a, probs_a, name_a, class_names_a, border_std=border_std)
+            _render_prediction_col(col_b, probs_b, name_b, class_names_b, border_std=border_std)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
