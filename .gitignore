@@ -1,7 +1,46 @@
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyo
+*.pyd
+
+# ── Virtual environments ───────────────────────────────────────────────────────
 .venv/
 venv/
+env/
+.env
+
+# ── Temporary / scratch scripts ───────────────────────────────────────────────
+retrain_*.py
+train_and_register_*.py
+scratch_*.py
+test_*.py
+debug_*.py
 *.tmp
 
+# ── Graphify knowledge graph output ───────────────────────────────────────────
+graphify-out/
+
+# ── Streamlit cache ───────────────────────────────────────────────────────────
+.streamlit/
+
+# ── Jupyter / notebook checkpoints ────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── OS junk ───────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Model artifacts — keep .keras files that are explicitly tracked ───────────
+# (fashion_cnn.keras and models/versions/*.keras are tracked intentionally)
+# Add large one-off .keras files here if they should NOT be pushed:
+# big_experiment.keras
