@@ -37,10 +37,10 @@
   },
   {
     "id": "candidate_11class_rejection",
-    "display_name": "Candidate v1 (11-Class with Non-Clothing Rejection)",
+    "display_name": "Candidate v2 (11-Class — Frozen-Feature Transfer)",
     "kind": "candidate",
     "keras_path": "models\\versions\\candidate_11class_rejection.keras",
-    "created_at": "2026-10-30T17:16:00",
+    "created_at": "2026-10-30T17:30:00",
     "num_classes": 11,
     "supports_rejection": true,
     "class_names": [
@@ -56,12 +56,11 @@
       "Ankle boot",
       "Other / Not Clothing"
     ],
-    "accuracy": 0.9512894153594971,
-    "macro_f1": 0.9512894153594971,
-    "clothing_accuracy": 0.9512894153594971,
+    "accuracy": 0.9730826616287231,
+    "macro_f1": 0.9730826616287231,
+    "clothing_accuracy": 0.948,
     "rejection_accuracy": 1.0,
     "model_size_mb": 5.69,
-    "train_duration_s": 20.1,
-    "notes": "Trained with 10 clothing categories, landscapes, scenes, and diverse wallpapers"
+    "notes": "Frozen-feature head-only training: 3000 clothing/class + 1150 non-clothing. Feature layers preserved from baseline."
   }
 ]
