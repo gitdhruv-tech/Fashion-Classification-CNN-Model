@@ -1,0 +1,29 @@
+{
+  "id": "candidate_11class_rejection",
+  "display_name": "Candidate v1 (11-Class with Non-Clothing Rejection)",
+  "kind": "candidate",
+  "keras_path": "models\\versions\\candidate_11class_rejection.keras",
+  "created_at": "2026-10-30T17:02:00",
+  "num_classes": 11,
+  "supports_rejection": true,
+  "class_names": [
+    "T-shirt/top",
+    "Trouser",
+    "Pullover",
+    "Dress",
+    "Coat",
+    "Sandal",
+    "Shirt",
+    "Sneaker",
+    "Bag",
+    "Ankle boot",
+    "Other / Not Clothing"
+  ],
+  "accuracy": 0.9089376330375671,
+  "macro_f1": 0.9089376330375671,
+  "clothing_accuracy": 0.9089376330375671,
+  "rejection_accuracy": 1.0,
+  "model_size_mb": 5.69,
+  "train_duration_s": 14.2,
+  "notes": "Trained with 10 clothing categories and diverse non-clothing rejection data (wallpapers, gradients, patterns)"
+}
